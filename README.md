@@ -1,4 +1,4 @@
-#🌍 Earth in Your Hand
+##🌍 Earth in Your Hand##
 
 A hand-tracking WebGL experiment by Hamaidia Abd el wadoud: control a spinning, zoomable 3D globe using nothing but your webcam and your hands.
 
