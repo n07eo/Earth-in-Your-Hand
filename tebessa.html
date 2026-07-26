@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="az">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>earth is in your hand by n07eo</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            cursor: none;
+        }
+        #video-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        video {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+        canvas#three-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+<div id="video-container">
+    <video id="webcam" autoplay playsinline></video>
+    <canvas id="three-canvas"></canvas>
+</div>
+
+<script>
+    const videoElement = document.getElementById('webcam');
+    const canvasElement = document.getElementById('three-canvas');
+    
+    let scene, camera, renderer, globe;
+    let rotationVelocity = 0.002; 
+    let lastZ = null; 
+    const friction = 0.99; 
+    
+    let targetPos = { x: 0, y: 0 };
+    let targetScale = 1.0; 
+    const easing = 0.3; 
+
+    function initThree() {
+        scene = new THREE.Scene();
+        // Perspektivi bir az dəyişərək dünyanı daha yaxın hiss etdiririk
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        
+        renderer = new THREE.WebGLRenderer({ canvas: canvasElement, alpha: true, antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 1.4);
+        scene.add(ambientLight);
+        
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+        directionalLight.position.set(5, 3, 5);
+        scene.add(directionalLight);
+
+        const loader = new THREE.TextureLoader();
+        const geometry = new THREE.SphereGeometry(1.5, 64, 64);
+        
+        const material = new THREE.MeshPhongMaterial({
+            color: 0xffffff,
+            shininess: 20,
+            map: loader.load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_atmos_2048.jpg')
+        });
+        
+        globe = new THREE.Mesh(geometry, material);
+        scene.add(globe);
+
+        const cloudGeo = new THREE.SphereGeometry(1.515, 64, 64);
+        const cloudMat = new THREE.MeshPhongMaterial({
+            map: loader.load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_clouds_1024.png'),
+            transparent: true,
+            opacity: 0.4
+        });
+        const clouds = new THREE.Mesh(cloudGeo, cloudMat);
+        globe.add(clouds);
+
+        // Kameranı dünyadan bir az daha yaxın yerləşdiririk (əvvəl 5 idi, indi 4)
+        camera.position.z = 4;
+    }
+
+    const hands = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.75,
+        minTrackingConfidence: 0.75
+    });
+
+    hands.onResults(onResults);
+
+    function getDistance(p1, p2) {
+        return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+    }
+
+    function isFingerFolded(landmarks, fingerTipIdx, fingerPipIdx) {
+        return landmarks[fingerTipIdx].y > landmarks[fingerPipIdx].y;
+    }
+
+    function isHandFist(landmarks) {
+        return isFingerFolded(landmarks, 8, 6) && 
+               isFingerFolded(landmarks, 12, 10) && 
+               isFingerFolded(landmarks, 16, 14) && 
+               isFingerFolded(landmarks, 20, 18);
+    }
+
+    function onResults(results) {
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            let rightHand = null; 
+            let leftHand = null;  
+
+            results.multiHandLandmarks.forEach((landmark, index) => {
+                const label = results.multiHandedness[index].label;
+                if (label === 'Left') rightHand = landmark; 
+                if (label === 'Right') leftHand = landmark;
+            });
+
+            // 1. Sağ Əl - İzləmə (Koordinatları barmaq uclarına daha yaxın etdik)
+            if (rightHand) {
+                const fingerTip = rightHand[8]; 
+                // Multiplier (vuran) dəyərlərini tənzimləyərək dünyanı barmaq ucuna daha sıx bağlayırıq
+                targetPos.x = ((1 - fingerTip.x) - 0.5) * 8; 
+                targetPos.y = -(fingerTip.y - 0.5) * 5 + 1.5; 
+
+                if (isHandFist(rightHand)) {
+                    rotationVelocity = 0;
+                }
+            }
+
+            // 2. Sol Əl - İrəli itələdikdə SOLA fırlanma və ZOOM
+            if (leftHand) {
+                const currentZ = leftHand[8].z; 
+                if (lastZ !== null) {
+                    const zDelta = currentZ - lastZ;
+                    if (zDelta < -0.002) { 
+                        rotationVelocity -= Math.abs(zDelta) * 5.0; 
+                    }
+                }
+                lastZ = currentZ;
+
+                const isMiddleFolded = isFingerFolded(leftHand, 12, 9);
+                const isRingFolded = isFingerFolded(leftHand, 16, 13);
+                const isPinkyFolded = isFingerFolded(leftHand, 20, 17);
+
+                if (isMiddleFolded && isRingFolded && isPinkyFolded) {
+                    const thumbTip = leftHand[4];
+                    const indexTip = leftHand[8];
+                    const distance = getDistance(thumbTip, indexTip);
+                    
+                    let newScale = distance * 8.0; 
+                    targetScale = Math.min(Math.max(newScale, 0.4), 2.8);
+                }
+            } else {
+                lastZ = null;
+            }
+        }
+    }
+
+    const cameraInput = new Camera(videoElement, {
+        onFrame: async () => {
+            await hands.send({ image: videoElement });
+        },
+        width: 1280,
+        height: 720
+    });
+
+    function animate() {
+        requestAnimationFrame(animate);
+        
+        globe.position.x += (targetPos.x - globe.position.x) * easing;
+        globe.position.y += (targetPos.y - globe.position.y) * easing;
+
+        globe.scale.x += (targetScale - globe.scale.x) * 0.1;
+        globe.scale.y += (targetScale - globe.scale.y) * 0.1;
+        globe.scale.z += (targetScale - globe.scale.z) * 0.1;
+
+        globe.rotation.y += rotationVelocity;
+        
+        if (Math.abs(rotationVelocity) > 0.0001) {
+            rotationVelocity *= friction;
+        }
+
+        renderer.render(scene, camera);
+    }
+
+    window.onload = () => {
+        initThree();
+        cameraInput.start();
+        animate();
+    };
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+</script>
+</body>
+</html>
